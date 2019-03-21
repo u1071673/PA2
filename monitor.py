@@ -1,56 +1,80 @@
+# Author: John Young
+# Date:   3-19-2019
+# Course: CS 4480, University of Utah, School of Computing
+# Copyright: CS 4480 and John Young - This work may not be copied for use in Academic Coursework.
+#
+# I, John Young, certify that I wrote this code from scratch and did not copy it in part or whole from
+# another source.  Any references used in the completion of the assignment are cited in my README file.
+#
+# File Contents
+#
+#    This is the main monitor file for PA2
+
 from ryu.base import app_manager
+from ryu.controller import ofp_event
+from ryu.controller.handler import CONFIG_DISPATCHER, MAIN_DISPATCHER
+from ryu.controller.handler import set_ev_cls
+from ryu.ofproto import ofproto_v1_0, ofproto_v1_2, ofproto_v1_3, ofproto_v1_4, ofproto_v1_5
 from ryu.lib.packet import packet
 from ryu.lib.packet import ethernet
+from ryu.lib.packet import ether_types
+from array import array
 
 
-class L2Forwarding(app_manager.RyuApp):
+class Monitor(app_manager.RyuApp):
+    # OFP_VERSIONS = [ofproto_v1_3.OFP_VERSION]
+    # OFP_VERSIONS = [ofproto_v1_0.OFP_VERSION, ofproto_v1_2.OFP_VERSION, ofproto_v1_3.OFP_VERSION, ofproto_v1_4.OFP_VERSION, ofproto_v1_5.OFP_VERSION]
+
     def __init__(self, *args, **kwargs):
-        super(L2Forwarding, self).__init__(*args, **kwargs)
+        super(Monitor, self).__init__(*args, **kwargs)
+        self.mac_to_port = {}
+
+    @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
+    def switch_features_handler(self, ev):
+        datapath = ev.msg.datapath
+        ofproto = datapath.ofproto
+        parser = datapath.ofproto_parser
+
+        match = parser.OFPMatch()
+        actions = [parser.OFPActionOutput(ofproto.OFPP_CONTROLLER,
+                                          ofproto.OFPCML_NO_BUFFER)]
+        self.add_flow(datapath, 0, match, actions)
+
+    def add_flow(self, datapath, priority, match, actions, buffer_id=None):
+        ofproto = datapath.ofproto
+        parser = datapath.ofproto_parser
+
+        inst = [parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS, actions)]
+        if buffer_id:
+            mod = parser.OFPFlowMod(datapath=datapath, buffer_id=buffer_id,
+                                    priority=priority, match=match,
+                                    instructions=inst)
+        else:
+            mod = parser.OFPFlowMod(datapath=datapath, priority=priority,
+                                    match=match, instructions=inst)
+        datapath.send_msg(mod)
 
     @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
     def packet_in_handler(self, ev):
-        msg = ev.msg  # Object representing a packet_in data structure.
-        datapath = msg.datapath  # Switch Datapath ID
-        ofproto = datapath.ofproto  # OpenFlow Protocol version the entities negotiated. In our case OF1.3
-
-        # We can inspect the packet headers for several packet types: ARP, Ethernet, ICMP, IPv4, IPv6, MPLS, OSPF, LLDP,
-        # TCP, UDP. For set of packet types supported refer to this link
-        pkt = packet.Packet(msg.data)
-        eth = pkt.get_protocol(ethernet.ethernet)
-
-        # I use the following two useful commands to extract Ether header details:
-        # dst = eth.dst
-        # src = eth.src
-
-        # Similarly, the OFPPacketOut class can be used to build a packet_out message with the required information
-        # (e.g., Datapath ID, associated actions etc)
-        out = ofp_parser.OFPPacketOut(datapath=dp, in_port=msg.in_port, actions=actions)  # Generate the message
-        dp.send_msg(out)  # Send the message to the switch
-
-        # Besides a PACKET_OUT, we can also perform a FLOW_MOD insertion into a switch. For this, we build the Match,
-        # Action, Instructions and generate the required Flow. Here is an example of how to create a match header where
-        # the in_port and eth_dst matches are extracted from the PACKET_IN:
         msg = ev.msg
-        in_port = msg.match['in_port']
-
-        # Get the destination ethernet address
-        pkt = packet.Packet(msg.data)
-        eth = pkt.get_protocol(ethernet.ethernet)
-        dst = eth.dst
-        match = parser.OFPMatch(in_port=in_port, eth_dst=dst)
-
-        # There are several other fields you can match, which are defined in line 1130. The supported set of actions is
-        # defined in line 230 and the instructions are defined in line 195. Here is an example of creating an action
-        # list for the flow.
-        actions = [ofp_parser.OFPActionOutput(ofp.OFPP_FLOOD)]  # Build the required action
-
-        # OpenFlow 1.3 associates set of instructions with each flow entry such as handling actions to modify/forward
-        # packets, support pipeline processing instructions in the case of multi-table, metering instructions to
-        # rate-limit traffic etc. The previous set of actions defined in OpenFlow 1.0 are one type of instructions
-        # defined in OpenFlow 1.3.
-        # Once the match rule and action list is formed, instructions are created as follows:
-        inst = [parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS, actions)]
-
-        # Given the above code, a Flow can be generated and added to a particular switch.
-        mod = parser.OFPFlowMod(datapath=datapath, priority=0, match=match, instructions=inst)
-        datapath.send_msg(mod)
+        pkt = packet.Packet(bytearray(msg.data))
+        for p in pkt:
+            debug_print(p.protocol_name, p)
+            if p.protocol_name == 'arp':
+                debug_print ('Packet protocol is arp!')
+            elif p.protocol_name == 'icmp':
+                debug_print('Packet protocol is icmp!')
+        # pkt = packet.Packet(msg.data)
+        # eth = pkt.get_protocols(ethernet.ethernet)
+        #
+        #
+        # dp = msg.datapath
+        # ofp = dp.ofproto
+        # ofp_parser = dp.ofproto_parser
+        # print(msg)
+        # actions = [ofp_parser.OFPActionOutput(ofp.OFPP_FLOOD)]
+        # out = ofp_parser.OFPPacketOut(
+        #     datapath=dp, buffer_id=msg.buffer_id, in_port=msg.in_port,
+        #     actions=actions)
+        #
+        # dp.send_msg(out)
