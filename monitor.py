@@ -26,6 +26,7 @@ from ryu.lib.packet import ether_types
 from array import array
 
 class Monitor(app_manager.RyuApp):
+    OFP_VERSIONS = [ofproto_v1_3.OFP_VERSION]
 
     # Number of ARP and ICMP packet protocols received.
     pkts_received = 0
