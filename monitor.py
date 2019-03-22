@@ -96,7 +96,10 @@ class Monitor(app_manager.RyuApp):
         :param msg: The msg containing a packet to search and print
         :return: N/A
         '''
-        in_port = msg.match['in_port']
+        in_port = '?'
+        for name, value in msg.match._fields2:
+            if name == 'in_port':
+                in_port = str(value)
         print_header = 'Packet('+ str(self.pkts_received) + ') Received on Port(' + str(in_port)+ '):'
         print_body = ''
 
