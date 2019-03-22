@@ -17,3 +17,7 @@ I utilized the following resources:
 |                                              [Debug SDN Ryu controller with Pycharm](http://installfights.blogspot.com/2016/10/debug-sdn-ryu-controller-with-pycharm.html?m=1)                                               |
 | [RYU Packet Library](https://ryu.readthedocs.io/en/latest/library_packet.html) | 
 | [RYU Dispatchers](https://ryu.readthedocs.io/en/latest/ryu_app_api.html?highlight=DISPATCHERS) |
+| [SimpleSwitch13](https://github.com/osrg/ryu/blob/master/ryu/app/simple_switch_13.py) |
+| [RYU ARP](https://ryu.readthedocs.io/en/latest/library_packet_ref/packet_arp.html) |
+| [RYU ICMP](https://ryu.readthedocs.io/en/latest/library_packet_ref/packet_icmp.html) |
+| [RYU Packet Examples](https://www.programcreek.com/python/example/103659/) |

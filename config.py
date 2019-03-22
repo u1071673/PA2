@@ -11,4 +11,5 @@
 #    Shared configurations.
 
 verbose = False
-def_sys_args = ['--ofp-tcp-listen-port', '6633', 'monitor', '--verbose', '--enable-debugger']
+def_sys_args = ['--ofp-tcp-listen-port', '6633', 'monitor', '--enable-debugger']
+# def_sys_args = ['--ofp-tcp-listen-port', '6633', 'monitor', '--verbose', '--enable-debugger']
