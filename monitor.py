@@ -188,7 +188,7 @@ class Monitor(app_manager.RyuApp):
         '''
         Generates the next_port out based on last port assigned to machine.
         :return: Next port to assign.
-        ''''''
+        '''
         next_port_out = self.next_out
         self.next_out++
         if self.next_out >= (self.front_end_testers + self.back_end_servers):
