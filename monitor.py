@@ -10,11 +10,12 @@
 #
 #    This is the main monitor file for PA2. For Phase 2 this file just prints informatio about ARP and ICMP packets.
 
+from array import array
+from ryu import cfg
 from ryu.base import app_manager
 from ryu.controller import ofp_event
 from ryu.controller.handler import CONFIG_DISPATCHER, MAIN_DISPATCHER
 from ryu.controller.handler import set_ev_cls
-from ryu.ofproto import ofproto_v1_0, ofproto_v1_2, ofproto_v1_3, ofproto_v1_4, ofproto_v1_5
 from ryu.lib.packet import packet
 from ryu.lib.packet import ethernet
 from ryu.lib.packet import ipv4
@@ -23,13 +24,11 @@ from ryu.lib.packet import arp
 from ryu.lib.packet import icmp
 from ryu.lib.packet import icmpv6
 from ryu.lib.packet import ether_types
-from array import array
+from ryu.ofproto import ofproto_v1_3
+import config
 
 class Monitor(app_manager.RyuApp):
     OFP_VERSIONS = [ofproto_v1_3.OFP_VERSION]
-
-    # Number of ARP and ICMP packet protocols received.
-    pkts_received = 0
 
     def __init__(self, *args, **kwargs):
         '''
@@ -39,6 +38,21 @@ class Monitor(app_manager.RyuApp):
         '''
         super(Monitor, self).__init__(*args, **kwargs)
         self.mac_to_port = {}
+        # Number of ARP and ICMP packet protocols received.
+        self.pkts_received = 0
+
+        # Inspired by https://stackoverflow.com/questions/17424905/passing-own-arguments-to-ryu-proxy-app
+        CONF = cfg.CONF
+        CONF.register_opts([
+            cfg.IntOpt('front_end_testers', default=4, help = ('Number of Front End Testers')),
+            cfg.IntOpt('back_end_servers', default=2, help = ('Number of Back End Testers')),
+            cfg.StrOpt('virtual_ip', default='10.0.0.10', help = ('Virtual IP address'))
+        ])
+
+        self.front_end_testers = CONF.front_end_testers
+        self.back_end_servers = CONF.back_end_servers
+        self.virtual_ip = CONF.virtual_ip
+        self.next_out = self.front_end_testers
 
     # Inspired by https://github.com/osrg/ryu/blob/master/ryu/app/simple_switch_13.py
     @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
@@ -51,10 +65,12 @@ class Monitor(app_manager.RyuApp):
         :return: N/A
         '''
         datapath = ev.msg.datapath
-        ofproto = datapath.ofproto
         parser = datapath.ofproto_parser
+        ofproto = datapath.ofproto
+        OFPP_CONTROLLER = ofproto.OFPP_CONTROLLER
+        OFPCML_NO_BUFFER = ofproto.OFPCML_NO_BUFFER
         match = parser.OFPMatch()
-        actions = [parser.OFPActionOutput(ofproto.OFPP_CONTROLLER, ofproto.OFPCML_NO_BUFFER)]
+        actions = [parser.OFPActionOutput(OFPP_CONTROLLER, OFPCML_NO_BUFFER)]
         self.add_flow_entry_to_switch(datapath, 0, match, actions)
 
     # Inspired by https://github.com/osrg/ryu/blob/master/ryu/app/simple_switch_13.py
@@ -68,14 +84,15 @@ class Monitor(app_manager.RyuApp):
         :param buffer_id: The OF entry's buffer id
         :return: N/A
         '''
-        ofproto = datapath.ofproto
         parser = datapath.ofproto_parser
-        inst = [parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS, actions)]
+        ofproto = datapath.ofproto
+        OFPIT_APPLY_ACTIONS = ofproto.OFPIT_APPLY_ACTIONS
+        instructions = [parser.OFPInstructionActions(OFPIT_APPLY_ACTIONS, actions)]
         if buffer_id:
             mod = parser.OFPFlowMod(datapath=datapath, buffer_id=buffer_id, priority=priority, match=match,
-                                    instructions=inst)
+                                    instructions=instructions)
         else:
-            mod = parser.OFPFlowMod(datapath=datapath, priority=priority, match=match, instructions=inst)
+            mod = parser.OFPFlowMod(datapath=datapath, priority=priority, match=match, instructions=instructions)
 
         datapath.send_msg(mod)
 
@@ -87,20 +104,105 @@ class Monitor(app_manager.RyuApp):
         It also carries the information about the state of the switch.
         :return: N/A
         '''
+        # Message Size Check.
         msg = ev.msg
-        self.print_packet_arp_icmp(msg)
+        msg_len = msg.msg_len
+        total_len = msg.total_len
+
+        if msg_len < total_len:
+            self.logger.debug("Message length is %s, which is larger than the full length frame size of %s bytes. "
+                              "Consider increasing 'miss_send_length' of the Mininet switch.", msg_len, total_len)
+
+        if config.verbose:
+            self.print_packet(msg)
+
+        self.packet_out(msg)
+
+    # Inspired by https://github.com/osrg/ryu/blob/master/ryu/app/simple_switch_13.py
+    def packet_out(self, msg):
+        '''
+        Parses a msg and adds a flow entry when applicable, then sends the message
+        out to the desired destination.
+        :param msg: Message containing packet info.
+        :return: N/A
+        '''
+        in_port = msg.match['in_port']
+        buffer_id = msg.buffer_id
+        datapath = msg.datapath
+        ofproto = datapath.ofproto
+        parser = datapath.ofproto_parser
+        switch_id = datapath.id
+        OFP_NO_BUFFER = ofproto.OFP_NO_BUFFER
+        OFPP_FLOOD = ofproto.OFPP_FLOOD
+
+        pkt = packet.Packet(msg.data)
+        ethernet_pkt = pkt.get_protocol(ethernet.ethernet)
+        ipv4_pkt = pkt.get_protocol(ipv4.ipv4)
+        ipv6_pkt = pkt.get_protocol(ipv6.ipv6)
+        arp_pkt = pkt.get_protocol(arp.arp)
+
+        dst = ethernet_pkt.dst
+        src = ethernet_pkt.src
+
+        # Ignore LDDP packet because it is just a device advertising it's ID.
+        if ethernet_pkt.ethertype == ether_types.ETH_TYPE_LLDP:
+            self.logger.debug('Ignoring LLDP packet.')
+            return
+
+        self.logger.info('Switch %s @ port %s says that %s is looking for %s.', switch_id, in_port, src, dst)
+        self.mac_to_port.setdefault(switch_id, {})
+
+        # void FLOOD
+        self.mac_to_port[switch_id][src] = in_port
+        if dst in self.mac_to_port[switch_id]:
+            out_port = self.mac_to_port[switch_id][dst]
+        elif arp_pkt and arp_pkt.dst_ip == msg.self.virtual_ip:
+            out_port = self.next_out_port()
+        else
+            out_port = OFPP_FLOOD
+
+        actions = [parser.OFPActionOutput(out_port)]
+        # Install a flow packet_in
+        if out_port != OFPP_FLOOD:
+            match = parser.OFPMatch(in_port=in_port, eth_dst=dst, eth_src=src)
+            # Verify if we have a valid buffer_id, if yes avoid to send both flow_mod & packet_out
+            if msg.buffer_id == OFP_NO_BUFFER:
+                # Not a valid buffer_id, so sending out a flow_mod and continuing to generate a packet_out
+                self.add_flow_entry_to_switch(datapath, 1, match, actions)
+            else:
+                # We already have a valid buffer_id so only send out flow_mod then return.
+                self.add_flow_entry_to_switch(datapath, 1, match, actions, buffer_id)
+                return
+
+        if buffer_id == OFP_NO_BUFFER: # Only send msg data when protocol is OFP_NO_BUFFER
+            data = msg.data
+        else:
+            data = None
+
+        out = parser.OFPPacketOut(datapath=datapath, buffer_id=buffer_id, in_port=in_port, actions=actions, data=data)
+
+        datapath.send_msg(out)
+
+    next_out = 0;
+    def next_out_port(self):
+        '''
+        Generates the next_port out based on last port assigned to machine.
+        :return: Next port to assign.
+        ''''''
+        next_port_out = self.next_out
+        self.next_out++
+        if self.next_out >= (self.front_end_testers + self.back_end_servers):
+            self.next_out = self.front_end_testers
+        return self.next_out =  % (self.front_end_testers + self.back_end_servers)
 
     # Inspired by https://ryu.readthedocs.io/en/latest/library_packet.html
-    def print_packet_arp_icmp(self, msg):
+    def print_packet(self, msg):
         '''
         Prints packets that follow protocols ARP or ICMP.
         :param msg: The msg containing a packet to search and print
         :return: N/A
         '''
-        in_port = '?'
-        for name, value in msg.match._fields2:
-            if name == 'in_port':
-                in_port = str(value)
+        in_port = msg.match['in_port']
         print_header = 'Packet('+ str(self.pkts_received) + ') Received on Port(' + str(in_port)+ '):'
         print_body = ''
 

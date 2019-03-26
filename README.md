@@ -21,3 +21,5 @@ I utilized the following resources:
 | [RYU ARP](https://ryu.readthedocs.io/en/latest/library_packet_ref/packet_arp.html) |
 | [RYU ICMP](https://ryu.readthedocs.io/en/latest/library_packet_ref/packet_icmp.html) |
 | [RYU Packet Examples](https://www.programcreek.com/python/example/103659/) |
+| [Understanding the Ryu API: Dissecting Simple Switch](https://inside-openflow.com/2016/07/21/ryu-api-dissecting-simple-switch/) |
+| [RYU config](https://stackoverflow.com/questions/17424905/passing-own-arguments-to-ryu-proxy-app) |
