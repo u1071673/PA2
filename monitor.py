@@ -28,7 +28,6 @@ from ryu.lib.packet import ether_types
 from ryu.ofproto import ofproto_v1_3
 from ryu.ofproto import ether
 
-import config
 import netaddr
 
 class Monitor(app_manager.RyuApp):
@@ -42,6 +41,7 @@ class Monitor(app_manager.RyuApp):
         '''
         super(Monitor, self).__init__(*args, **kwargs)
         self.mac_to_port = {}
+
         # Number of ARP and ICMP packet protocols received.
         self.pkts_received = 0
 
@@ -58,6 +58,9 @@ class Monitor(app_manager.RyuApp):
         self.virtual_ip = CONF.virtual_ip
         self.next_out = self.front_end_testers + 1
 
+        self.logger.info("Configured for %s testers and %s servers located at %s virtual ip address.", self.front_end_testers, self.back_end_servers, self.virtual_ip)
+        self.logger.info("First server located at port %s", self.next_out)
+
     # Inspired by https://github.com/osrg/ryu/blob/master/ryu/app/simple_switch_13.py
     @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
     def switch_features_handler(self, ev):
@@ -66,7 +69,6 @@ class Monitor(app_manager.RyuApp):
         After setting up the OF entry it's then added into the switch's OF table.
         :param ev: The event that triggered EventOFPSwitchFeatures, during CONFIG_DISPATCHER.
         Carries information about the state of the switch.
-        :return: N/A
         '''
         datapath = ev.msg.datapath
         parser = datapath.ofproto_parser
@@ -93,10 +95,12 @@ class Monitor(app_manager.RyuApp):
         OFPIT_APPLY_ACTIONS = ofproto.OFPIT_APPLY_ACTIONS
         instructions = [parser.OFPInstructionActions(OFPIT_APPLY_ACTIONS, actions)]
         if buffer_id:
-            mod = parser.OFPFlowMod(datapath=datapath, buffer_id=buffer_id, priority=priority, match=match,
+            mod = parser.OFPFlowMod(datapath=datapath, buffer_id=buffer_id,
+                                    priority=priority, match=match,
                                     instructions=instructions)
         else:
-            mod = parser.OFPFlowMod(datapath=datapath, priority=priority, match=match, instructions=instructions)
+            mod = parser.OFPFlowMod(datapath=datapath, priority=priority,
+                                    match=match, instructions=instructions)
 
         datapath.send_msg(mod)
 
@@ -106,7 +110,6 @@ class Monitor(app_manager.RyuApp):
         Handles packets that are coming in during the MAIN_DISPATCHER phase.
         :param ev: The event that triggered EventOFPPacketIn, durign MAIN_DISPATCHER.
         It also carries the information about the state of the switch.
-        :return: N/A
         '''
         # Message Size Check.
         msg = ev.msg
@@ -117,8 +120,7 @@ class Monitor(app_manager.RyuApp):
             self.logger.debug("Message length is %s, which is larger than the full length frame size of %s bytes. "
                               "Consider increasing 'miss_send_length' of the Mininet switch.", msg_len, total_len)
 
-        if config.verbose:
-            self.print_packet(msg)
+        self.print_packet(msg)
 
         self.packet_out(msg)
 
@@ -128,51 +130,39 @@ class Monitor(app_manager.RyuApp):
         Parses a msg and adds a flow entry when applicable, then sends the message
         out to the desired destination.
         :param msg: Message containing packet info.
-        :return: N/A
         '''
-        in_port = msg.match['in_port']
-        buffer_id = msg.buffer_id
-        datapath = msg.datapath
-        ofproto = datapath.ofproto
-        parser = datapath.ofproto_parser
-        switch_id = datapath.id
-        OFPP_FLOOD = ofproto.OFPP_FLOOD
-        OFP_NO_BUFFER = ofproto.OFP_NO_BUFFER
-
-        pkt = packet.Packet(msg.data)
+        data = msg.data
+        pkt = packet.Packet(data)
         ethernet_pkt = pkt.get_protocol(ethernet.ethernet)
-        arp_pkt = pkt.get_protocol(arp.arp)
-
-        dst_mac = ethernet_pkt.dst
-        src_mac = ethernet_pkt.src
-
         # Ignore LDDP packet because it is just a device advertising it's ID.
         if ethernet_pkt.ethertype == ether_types.ETH_TYPE_LLDP:
             self.logger.debug('Ignoring LLDP packet.')
             return
 
-        # self.logger.info('Switch %s @ port %s says that %s is looking for %s.', switch_id, in_port, src_mac, dst_mac)
-        self.mac_to_port.setdefault(switch_id, {})
+        in_port = msg.match['in_port']
+        datapath = msg.datapath
+        parser = datapath.ofproto_parser
+        switch_id = datapath.id
 
-        # avoid FLOOD
-        self.mac_to_port[switch_id][src_mac] = in_port
+        arp_pkt = pkt.get_protocol(arp.arp)
 
-        if dst_mac in self.mac_to_port[switch_id]:
-            out_port = self.mac_to_port[switch_id][dst_mac]
-        elif arp_pkt and arp_pkt.dst_ip == self.virtual_ip and arp_pkt.opcode == arp.ARP_REQUEST:
+        dst_mac = ethernet_pkt.dst
+        src_mac = ethernet_pkt.src
+
+        if arp_pkt and arp_pkt.dst_ip == self.virtual_ip and arp_pkt.opcode == arp.ARP_REQUEST:
             # Step 2
-            dst_mac, dst_ip, out_port = self.next_mac_ip_port()
+            dst_mac, dst_ip, out_port = self.next_mac_ip_port(switch_id, src_mac)
             src_ip = arp_pkt.src_ip
             dst_vip = arp_pkt.dst_ip
 
-            self.logger.info('Adding OF rule [' + dst_mac + ' -> ' + src_mac + '] to s1')
-            match = parser.OFPMatch(in_port=out_port, eth_dst=src_mac, eth_src=dst_mac)
+            self.logger.info('Adding OF rule [' + dst_ip + ' -> ' + src_ip + '] to s1')
+            match = parser.OFPMatch(in_port=out_port, eth_type=ether_types.ETH_TYPE_IP, ipv4_dst=src_ip, ipv4_src=dst_ip)
             actions = [parser.OFPActionOutput(in_port)]
             self.add_flow(datapath, 1, match, actions, buffer_id=ofproto_v1_3.OFP_NO_BUFFER)
 
-            self.logger.info('Adding OF rule [' + src_mac + ' -> ' + dst_mac + '] to s1')
-            match = parser.OFPMatch(in_port=in_port, eth_dst=dst_mac, eth_src=src_mac)
-            actions = [parser.OFPActionOutput(out_port)]
+            self.logger.info('Adding OF rule [' + src_ip + ' -> ' + dst_ip + '] to s1')
+            match = parser.OFPMatch(in_port=in_port, eth_type=ether_types.ETH_TYPE_IP, ipv4_dst=dst_vip, ipv4_src=src_ip)
+            actions = [parser.OFPActionSetField(ipv4_dst=dst_ip), parser.OFPActionOutput(out_port)]
             self.add_flow(datapath, 1, match, actions, buffer_id=ofproto_v1_3.OFP_NO_BUFFER)
 
             # Step 3
@@ -192,7 +182,9 @@ class Monitor(app_manager.RyuApp):
 
             actions = [parser.OFPActionOutput(in_port)]
 
-            out = parser.OFPPacketOut(datapath=datapath, in_port=out_port, actions=actions, data=data, buffer_id=ofproto_v1_3.OFP_NO_BUFFER)
+            out = parser.OFPPacketOut(datapath=datapath, in_port=out_port,
+                                      actions=actions, data=data,
+                                      buffer_id=ofproto_v1_3.OFP_NO_BUFFER)
 
             datapath.send_msg(out)
 
@@ -211,34 +203,13 @@ class Monitor(app_manager.RyuApp):
 
             actions = [parser.OFPActionOutput(out_port)]
 
-            out = parser.OFPPacketOut(datapath=datapath, in_port=in_port, actions=actions, data=data,
+            out = parser.OFPPacketOut(datapath=datapath, in_port=in_port,
+                                      actions=actions, data=data,
                                       buffer_id=ofproto_v1_3.OFP_NO_BUFFER)
 
             datapath.send_msg(out)
 
-            self.mac_to_port[switch_id][dst_mac] = out_port
             return
-
-        else:
-            out_port = ofproto.OFPP_FLOOD
-
-        actions = [parser.OFPActionOutput(out_port)]
-
-        # install a flow to avoid packet_in next time
-        if out_port != ofproto.OFPP_FLOOD:
-            match = parser.OFPMatch(in_port=in_port, eth_dst=dst_mac, eth_src=src_mac)
-            self.logger.info('_Adding OF rule [' + src_mac + ' -> ' + dst_mac + '] to s1')
-            if msg.buffer_id != ofproto.OFP_NO_BUFFER:
-                self.add_flow(datapath, 1, match, actions, msg.buffer_id)
-                return
-            else:
-                self.add_flow(datapath, 1, match, actions)
-        data = None
-        if msg.buffer_id == ofproto.OFP_NO_BUFFER:
-            data = msg.data
-
-        out = parser.OFPPacketOut(datapath=datapath, in_port=in_port, actions=actions, data=data, buffer_id=ofproto_v1_3.OFP_NO_BUFFER)
-        datapath.send_msg(out)
 
     # Inspired by https://stackoverflow.com/questions/46697490/converting-hex-number-to-mac-address#46697810
     def port_to_mac(self, port: int):
@@ -263,34 +234,43 @@ class Monitor(app_manager.RyuApp):
         byte3 = 10
         return str(str(byte3) + str('.') + str(byte2) + str('.') + str(byte1) + str('.') + str(byte0))
 
-    def next_mac_ip_port(self):
+    def next_mac_ip_port(self, switch_id, src_mac):
         '''
         Generates the next_port out, in round robbin fashion, based on last port assigned to machine.
         :return: Next port to assign.
         '''
-        if self.next_out > (self.front_end_testers + self.back_end_servers):
-            self.next_out = self.front_end_testers + 1
+        self.mac_to_port.setdefault(switch_id, {})
 
-        ret = self.next_out
-        self.next_out += 1
-        return self.port_to_mac(ret), self.port_to_ip(ret), ret
+        if src_mac in self.mac_to_port[switch_id]:
+            port = self.mac_to_port[switch_id][src_mac]
+
+        else:
+            if self.next_out > (self.front_end_testers + self.back_end_servers):
+                self.next_out = self.front_end_testers + 1
+
+            port = self.next_out
+            self.mac_to_port[switch_id][src_mac] = port
+            self.next_out += 1
+
+        return self.port_to_mac(port), self.port_to_ip(port), port
 
     def arp_reply(self, datapath, src_mac, src_ip, dst_mac, dst_ip, in_port, out_port):
         '''
         Generates an ARP reply packet.
-        # ARP reply Example parser.OFPPacketOut parameter values:
-        # simple_switch_13  -> h1 ping -c 1 h3
-        # simple_switch_13  -> ethernet(dst='00:00:00:00:00:01',ethertype=2054,src='00:00:00:00:00:03')
-        # simple_switch_13  -> arp(dst_ip='10.0.0.1',dst_mac='00:00:00:00:00:01',hlen=6,hwtype=1,opcode=2,plen=4,proto=2048,src_ip='10.0.0.3',src_mac='00:00:00:00:00:03')
-        # simple_switch_13  -> actions = <class 'list'>: [OFPActionOutput(len=16,max_len=65509,port=1,type=0)]
-        # simple_switch_13  -> in_port = 3
-        # simple_switch_13  -. data = b'\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x03\x08\x06\x00\x01\x08\x00\x06\x04\x00\x02\x00\x00\x00\x00\x00\x03\n\x00\x00\x03\x00\x00\x00\x00\x00\x01\n\x00\x00\x01'
-        # monitor           -> h1 ping -c 1 10.0.0.10
-        # monitor           -> ethernet(dst='00:00:00:00:00:01',ethertype=2054,src='00:00:00:00:00:05')
-        # monitor           -> arp(dst_ip='10.0.0.1',dst_mac='00:00:00:00:00:01',hlen=6,hwtype=1,opcode=2,plen=4,proto=2048,src_ip='10.0.0.10',src_mac='00:00:00:00:00:05')
-        # monitor           -> actions = <class 'list'>: [OFPActionOutput(len=16,max_len=65509,port=1,type=0)]
-        # monitor           -> in_port = 5
-        # monitor           -> data = b'\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x03\x08\x06\x00\x01\x08\x00\x06\x04\x00\x02\x00\x00\x00\x00\x00\x03\n\x00\x00\x03\x00\x00\x00\x00\x00\x01\n\x00\x00\x01'
+
+        ARP reply Example parser.OFPPacketOut parameter values:
+        simple_switch_13  -> h1 ping -c 1 h3
+        simple_switch_13  -> ethernet(dst='00:00:00:00:00:01',ethertype=2054,src='00:00:00:00:00:03')
+        simple_switch_13  -> arp(dst_ip='10.0.0.1',dst_mac='00:00:00:00:00:01',hlen=6,hwtype=1,opcode=2,plen=4,proto=2048,src_ip='10.0.0.3',src_mac='00:00:00:00:00:03')
+        simple_switch_13  -> actions = <class 'list'>: [OFPActionOutput(len=16,max_len=65509,port=1,type=0)]
+        simple_switch_13  -> in_port = 3
+        simple_switch_13  -. data = b'\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x03\x08\x06\x00\x01\x08\x00\x06\x04\x00\x02\x00\x00\x00\x00\x00\x03\n\x00\x00\x03\x00\x00\x00\x00\x00\x01\n\x00\x00\x01'
+        monitor           -> h1 ping -c 1 10.0.0.10
+        monitor           -> ethernet(dst='00:00:00:00:00:01',ethertype=2054,src='00:00:00:00:00:05')
+        monitor           -> arp(dst_ip='10.0.0.1',dst_mac='00:00:00:00:00:01',hlen=6,hwtype=1,opcode=2,plen=4,proto=2048,src_ip='10.0.0.10',src_mac='00:00:00:00:00:05')
+        monitor           -> actions = <class 'list'>: [OFPActionOutput(len=16,max_len=65509,port=1,type=0)]
+        monitor           -> in_port = 5
+        monitor           -> data = b'\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x03\x08\x06\x00\x01\x08\x00\x06\x04\x00\x02\x00\x00\x00\x00\x00\x03\n\x00\x00\x03\x00\x00\x00\x00\x00\x01\n\x00\x00\x01'
         :param datapath:
         :param src_mac:
         :param src_ip:
@@ -324,9 +304,8 @@ class Monitor(app_manager.RyuApp):
     # Inspired by https://ryu.readthedocs.io/en/latest/library_packet.html
     def print_packet(self, msg):
         '''
-        Prints packets that follow protocols ARP or ICMP.
+        Prints information about the packet's message.
         :param msg: The msg containing a packet to search and print
-        :return: N/A
         '''
         in_port = msg.match['in_port']
         print_header = 'Packet('+ str(self.pkts_received) + ') Received on Port(' + str(in_port)+ '):'
@@ -342,7 +321,7 @@ class Monitor(app_manager.RyuApp):
         ipv6_pkt = pkt.get_protocol(ipv6.ipv6)
         # Example {arp} arp(dst_ip='10.0.0.1',dst_mac='00:00:00:00:00:00',hlen=6,hwtype=1,opcode=1,plen=4,proto=2048,src_ip='10.0.0.3',src_mac='00:00:00:00:00:03')
         arp_pkt = pkt.get_protocol(arp.arp)
-        # Example icmp(code=0,csum=57873,data=echo(data=bytearray(b'dl\x94\\\x00\x00\x00\x00\r\x9e\x06\x00\x00\x00\x00\x00\x10\x11\x12\x13\x14\x15\x16\x17\x18\x19\x1a\x1b\x1c\x1d\x1e\x1f !"#$%&\'()*+,-./01234567'),id=19123,seq=1),type=8)
+        # Example {icmp} icmp(code=0,csum=57873,data=echo(data=bytearray(b'dl\x94\\\x00\x00\x00\x00\r\x9e\x06\x00\x00\x00\x00\x00\x10\x11\x12\x13\x14\x15\x16\x17\x18\x19\x1a\x1b\x1c\x1d\x1e\x1f !"#$%&\'()*+,-./01234567'),id=19123,seq=1),type=8)
         icmp_pkt = pkt.get_protocol(icmp.icmp)
         # Example {icmpv6} icmpv6(code=0,csum=39570,data=mldv2_report(record_num=2,records=[mldv2_report_group(address='ff02::1:ff69:d373',aux=None,aux_len=0,num=0,srcs=[],type_=3), mldv2_report_group(address='ff02::1:ff00:1',aux=None,aux_len=0,num=0,srcs=[],type_=4)]),type_=143)
         icmpv6_pkt = pkt.get_protocol(icmpv6.icmpv6)
@@ -384,10 +363,20 @@ class Monitor(app_manager.RyuApp):
 """
             print_header += ' ARP'
 
+        # Example {icmp} icmp(code=0,csum=57873,data=echo(data=bytearray(b'dl\x94\\\x00\x00\x00\x00\r\x9e\x06\x00\x00\x00\x00\x00\x10\x11\x12\x13\x14\x15\x16\x17\x18\x19\x1a\x1b\x1c\x1d\x1e\x1f !"#$%&\'()*+,-./01234567'),id=19123,seq=1),type=8)
         if icmp_pkt:
-            print_body += """PING
+            print_body += 'ICMP'
+            if icmp_pkt.code == 0 and (icmp_pkt.type == 8 or icmp_pkt.type == 0):
+                print_body += ' PING'
+                print_header += ' PING'
+            else:
+                print_header += ' ICMP'
+
+            print_body += """
+    Code:       """ + str(icmp_pkt.code) + """
+    Check Sum:  """ + str(icmp_pkt.csum) + """
+    Type:       """ + str(icmp_pkt.type) + """
 """
-            print_header += ' PING'
 
         (cntl_address, cntl_port) = msg.datapath.address
 
