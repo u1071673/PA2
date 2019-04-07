@@ -183,6 +183,7 @@ class Monitor(app_manager.RyuApp):
                                      ip_to_tell=src_ip, mac_to_tell=src_mac, port_to_tell=in_port)
                 datapath.send_msg(out)
 
+
     # Inspired by https://stackoverflow.com/questions/46697490/converting-hex-number-to-mac-address#46697810
     def port_to_mac(self, port: int):
         '''
