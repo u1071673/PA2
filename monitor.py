@@ -171,12 +171,6 @@ class Monitor(app_manager.RyuApp):
                                      ip_to_tell=src_ip, mac_to_tell=src_mac, port_to_tell=in_port)
                 datapath.send_msg(out)
 
-                if needs_init:
-                    # Send ARP request to server
-                    out = self.build_arp(datapath=datapath, opcode=arp.ARP_REQUEST, parser=parser,
-                                         ip_of_interest=dst_ip, mac_of_interest=dst_mac, port_of_interest=out_port,
-                                         ip_to_tell=src_ip, mac_to_tell=src_mac, port_to_tell=in_port)
-                    datapath.send_msg(out)
 
             elif arp_pkt.dst_ip in self.client_to_server[switch_id]:
                 src_mac, src_ip, in_port = self.client_to_server[switch_id][arp_pkt.dst_ip]
