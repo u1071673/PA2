@@ -40,8 +40,9 @@ class Monitor(app_manager.RyuApp):
         :param kwargs: Init KW arguments
         '''
         super(Monitor, self).__init__(*args, **kwargs)
-        self.mac_to_port = {}
+        self.ip_to_port = {}
         self.client_to_server = {}
+        self.mac_port_from_ip = {}
 
         # Number of ARP and ICMP packet protocols received (received packets counter)
         self.pkts_received = 0
@@ -140,6 +141,10 @@ class Monitor(app_manager.RyuApp):
         switch_id = datapath.id
         OFPP_FLOOD = ofproto.OFPP_FLOOD
 
+        self.ip_to_port.setdefault(switch_id, {})
+        self.client_to_server.setdefault(switch_id, {})
+        self.mac_port_from_ip.setdefault(switch_id, {})
+
         arp_pkt = pkt.get_protocol(arp.arp)
 
         dst_mac = ethernet_pkt.dst
@@ -147,32 +152,42 @@ class Monitor(app_manager.RyuApp):
 
         if arp_pkt and arp_pkt.opcode == arp.ARP_REQUEST:
             src_ip = arp_pkt.src_ip
-            dst_mac, dst_ip, out_port = self.next_mac_ip_port(switch_id, src_mac)
 
             if arp_pkt.dst_ip == self.virtual_ip:
-                # Step 2
+                needs_init = src_ip not in self.client_to_server[switch_id]
+                dst_mac, dst_ip, out_port = self.next_mac_ip_port(switch_id=switch_id, src_ip=src_ip)
                 src_ip = arp_pkt.src_ip
 
-                self.add_two_way_flow(parser=parser, datapath=datapath, src_ip=src_ip, dst_ip=dst_ip, in_port=in_port, out_port=out_port)
+                if needs_init:
+                    self.client_to_server[switch_id][src_ip] = dst_mac, dst_ip, out_port
+                    self.mac_port_from_ip[switch_id][src_ip] = src_mac, in_port
+                    self.add_two_way_flow(parser=parser, datapath=datapath,
+                                          src_ip=src_ip, dst_ip=dst_ip, in_port=in_port,
+                                          out_port=out_port)
 
                 # Send ARP reply to host
                 out = self.build_arp(datapath=datapath, opcode=arp.ARP_REPLY, parser=parser,
-                          ip_of_interest=self.virtual_ip, mac_of_interest=dst_mac, port_of_interest=out_port,
-                          ip_to_tell=src_ip, mac_to_tell=src_mac, port_to_tell=in_port)
-                datapath.send_msg(out)
-
-                # Send ARP request to server
-                out = self.build_arp(datapath=datapath, opcode=arp.ARP_REQUEST, parser=parser,
-                                     ip_of_interest=src_ip, mac_of_interest=src_mac, port_of_interest=in_port,
-                                     ip_to_tell=dst_ip, mac_to_tell=dst_mac, port_to_tell=out_port)
-                datapath.send_msg(out)
-            else:
-                # Send ARP reply to host
-                out = self.build_arp(datapath=datapath, opcode=arp.ARP_REPLY, parser=parser,
-                                     ip_of_interest=dst_ip, mac_of_interest=dst_mac, port_of_interest=out_port,
+                                     ip_of_interest=self.virtual_ip, mac_of_interest=dst_mac, port_of_interest=out_port,
                                      ip_to_tell=src_ip, mac_to_tell=src_mac, port_to_tell=in_port)
                 datapath.send_msg(out)
 
+                if needs_init:
+                    # Send ARP request to server
+                    out = self.build_arp(datapath=datapath, opcode=arp.ARP_REQUEST, parser=parser,
+                                         ip_of_interest=dst_ip, mac_of_interest=dst_mac, port_of_interest=out_port,
+                                         ip_to_tell=src_ip, mac_to_tell=src_mac, port_to_tell=in_port)
+                    datapath.send_msg(out)
+
+            elif arp_pkt.dst_ip in self.client_to_server[switch_id]:
+                src_mac, src_ip, in_port = self.client_to_server[switch_id][arp_pkt.dst_ip]
+                dst_mac, out_port = self.mac_port_from_ip[switch_id][arp_pkt.dst_ip]
+                dst_ip = arp_pkt.dst_ip
+
+                # Send ARP reply to server
+                out = self.build_arp(datapath=datapath, opcode=arp.ARP_REPLY, parser=parser,
+                                     ip_of_interest=arp_pkt.dst_ip, mac_of_interest=dst_mac, port_of_interest=out_port,
+                                     ip_to_tell=src_ip, mac_to_tell=src_mac, port_to_tell=in_port)
+                datapath.send_msg(out)
 
     # Inspired by https://stackoverflow.com/questions/46697490/converting-hex-number-to-mac-address#46697810
     def port_to_mac(self, port: int):
@@ -197,31 +212,26 @@ class Monitor(app_manager.RyuApp):
         byte3 = 10
         return str(str(byte3) + str('.') + str(byte2) + str('.') + str(byte1) + str('.') + str(byte0))
 
-    def next_mac_ip_port(self, switch_id, src_mac):
+    def next_mac_ip_port(self, switch_id, src_ip):
         '''
         Generates the next_port out, in round robbin fashion, based on last port assigned to machine.
-        :return: Next port to assign.
+        :return: A tuple containing the <str, str, int> mac, ip, port.
         '''
-        self.mac_to_port.setdefault(switch_id, {})
-        self.client_to_server.setdefault(switch_id, {})
 
-        if src_mac in self.mac_to_port[switch_id]:
-            port = self.mac_to_port[switch_id][src_mac]
-
+        if src_ip in self.ip_to_port[switch_id]:
+            out_port = self.ip_to_port[switch_id][src_ip]
         else:
             if self.next_out > (self.front_end_testers + self.back_end_servers):
                 self.next_out = self.front_end_testers + 1
 
-            port = self.next_out
-            self.mac_to_port[switch_id][src_mac] = port
+            out_port = self.next_out
+            self.ip_to_port[switch_id][src_ip] = out_port
             self.next_out += 1
 
-        mac = self.port_to_mac(port)
-        ip = self.port_to_ip(port)
+        dst_mac = self.port_to_mac(out_port)
+        dst_ip = self.port_to_ip(out_port)
 
-        self.client_to_server[switch_id][src_mac] = mac
-
-        return self.port_to_mac(port), self.port_to_ip(port), port
+        return (dst_mac, dst_ip, out_port)
 
     def add_two_way_flow(self, parser, datapath, src_ip, dst_ip, in_port, out_port):
         self.logger.info('Adding OF rule [' + self.virtual_ip + ' -> ' + src_ip + '] to s1')
@@ -245,9 +255,9 @@ class Monitor(app_manager.RyuApp):
         :param ip_of_interest: IP to add to ARP table
         :param mac_of_interest: MAC to add to ARP table
         :param port_of_interest: Port to add to ARP table
-        :param ip_to_tell:
-        :param mac_to_tell:
-        :param port_to_tell:
+        :param ip_to_tell: IP of machine being added to.
+        :param mac_to_tell: MAC of machine being added to.
+        :param port_to_tell: port of machine being added to.
         :return:
         '''
         '''
@@ -266,7 +276,7 @@ class Monitor(app_manager.RyuApp):
         monitor           -> actions = <class 'list'>: [OFPActionOutput(len=16,max_len=65509,port=1,type=0)]
         monitor           -> in_port = 5
         monitor           -> data = b'\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x03\x08\x06\x00\x01\x08\x00\x06\x04\x00\x02\x00\x00\x00\x00\x00\x03\n\x00\x00\x03\x00\x00\x00\x00\x00\x01\n\x00\x00\x01'
-        :param datapath: the
+        :param datapath: 
         :param src_mac:
         :param src_ip:
         :param dst_mac:
@@ -276,13 +286,18 @@ class Monitor(app_manager.RyuApp):
         :return:
         '''
 
-        self.logger.info('ARP Request who-has ' + str(ip_of_interest) + ' tell ' + str(ip_to_tell))
+        if opcode == arp.ARP_REPLY:
+            self.logger.info('ARP Reply, ' + str(ip_of_interest) + ' is at ' + str(mac_of_interest) + ' for ' + str(ip_to_tell))
+        elif opcode == arp.ARP_REQUEST:
+            self.logger.info('ARP Request, who-has ' + str(ip_to_tell) + ' tell ' + str(ip_of_interest))
+
         p = packet.Packet()
 
-        p.add_protocol(ethernet.ethernet(src=mac_of_interest, ethertype=ether.ETH_TYPE_ARP))
+        p.add_protocol(ethernet.ethernet(dst=mac_to_tell, src=mac_of_interest, ethertype=ether.ETH_TYPE_ARP))
         p.add_protocol(arp.arp(hwtype=1, proto=ether.ETH_TYPE_IP, hlen=6, plen=4, opcode=opcode,
-                    src_mac=mac_of_interest, dst_mac=mac_to_tell,
-                    dst_ip=ip_to_tell, src_ip=ip_of_interest))
+                               src_mac=mac_of_interest, src_ip=ip_of_interest,
+                               dst_mac=mac_to_tell, dst_ip=ip_to_tell))
+
         p.serialize()
         data = p.data
 
