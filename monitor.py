@@ -92,7 +92,6 @@ class Monitor(app_manager.RyuApp):
         :param match: The OF entry's match address range
         :param actions: The OF entry's action to do on match
         :param buffer_id: The OF entry's buffer id
-        :return: N/A
         '''
         parser = datapath.ofproto_parser
         ofproto = datapath.ofproto
@@ -228,6 +227,15 @@ class Monitor(app_manager.RyuApp):
         return (dst_mac, dst_ip, out_port)
 
     def add_two_way_flow(self, parser, datapath, src_ip, dst_ip, in_port, out_port):
+        '''
+        Adds two flow entries to the switch, to allow a two way flow from the client to server.
+        :param parser: Parser to build the match and action.
+        :param datapath: Information relating to the switch.
+        :param src_ip: The client ip.
+        :param dst_ip: The server ip.
+        :param in_port: The client port.
+        :param out_port: The server port.
+        '''
         self.logger.info('Adding OF rule [' + self.virtual_ip + ' -> ' + src_ip + '] to s1')
         match = parser.OFPMatch(eth_type=ether_types.ETH_TYPE_IP,
                                 ipv4_dst=src_ip, ipv4_src=dst_ip)
@@ -242,21 +250,7 @@ class Monitor(app_manager.RyuApp):
 
     def build_arp(self, datapath, parser, opcode, ip_of_interest, mac_of_interest, port_of_interest, ip_to_tell, mac_to_tell, port_to_tell):
         '''
-
-        :param datapath:
-        :param parser:
-        :param opcode:
-        :param ip_of_interest: IP to add to ARP table
-        :param mac_of_interest: MAC to add to ARP table
-        :param port_of_interest: Port to add to ARP table
-        :param ip_to_tell: IP of machine being added to.
-        :param mac_to_tell: MAC of machine being added to.
-        :param port_to_tell: port of machine being added to.
-        :return:
-        '''
-        '''
         Generates an ARP reply packet.
-
         ARP reply Example parser.OFPPacketOut parameter values:
         simple_switch_13  -> h1 ping -c 1 h3
         simple_switch_13  -> ethernet(dst='00:00:00:00:00:01',ethertype=2054,src='00:00:00:00:00:03')
@@ -270,14 +264,16 @@ class Monitor(app_manager.RyuApp):
         monitor           -> actions = <class 'list'>: [OFPActionOutput(len=16,max_len=65509,port=1,type=0)]
         monitor           -> in_port = 5
         monitor           -> data = b'\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x03\x08\x06\x00\x01\x08\x00\x06\x04\x00\x02\x00\x00\x00\x00\x00\x03\n\x00\x00\x03\x00\x00\x00\x00\x00\x01\n\x00\x00\x01'
-        :param datapath: 
-        :param src_mac:
-        :param src_ip:
-        :param dst_mac:
-        :param dst_ip:
-        :param in_port:
-        :param out_port:
-        :return:
+        :param datapath: Information about the switch that is related to the arp.
+        :param parser: The parser that contains info about how to generate the arp message and packet.
+        :param opcode: The arp opcode. (i.e. ARP_REPLY or ARP_REQUEST)
+        :param ip_of_interest: IP to add to ARP table.
+        :param mac_of_interest: MAC to add to ARP table.
+        :param port_of_interest: Port to add to ARP table.
+        :param ip_to_tell: IP of machine being added to.
+        :param mac_to_tell: MAC of machine being added to.
+        :param port_to_tell: port of machine being added to.
+        :return: The arp message to send out.
         '''
 
         if opcode == arp.ARP_REPLY:
