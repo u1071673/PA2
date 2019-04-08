@@ -8,7 +8,8 @@
 #
 # File Contents
 #
-#    This is the main monitor file for PA2. For Phase 2 this file just prints informatio about ARP and ICMP packets.
+#    This is the main monitor file for PA2. For Phase 3 this file prints information about incoming packets
+#    and acts as a load balancer controller.
 
 from array import array
 from re import findall
