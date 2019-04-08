@@ -184,7 +184,7 @@ class Monitor(app_manager.RyuApp):
                 datapath.send_msg(out)
 
     # Inspired by https://stackoverflow.com/questions/46697490/converting-hex-number-to-mac-address#46697810
-    def port_to_mac(self, port: int):
+    def port_to_mac(self, port):
         '''
         Generates a mac address from a given port. (i.e port=5 to mac=00:00:00:00:00:05)
         :param port: The port number to generate a mac address for.
@@ -194,7 +194,7 @@ class Monitor(app_manager.RyuApp):
         mac_address = ':'.join(findall(r'\w\w', mac_address))
         return mac_address
 
-    def port_to_ip(self, port: int):
+    def port_to_ip(self, port):
         '''
         Generates a ip address from a given port. (i.e port=5 to ip=0.0.0.5)
         :param port: The port number to generate a ip address for.
