@@ -31,16 +31,16 @@ from ryu.ofproto import ether
 
 import netaddr
 
-class Monitor(app_manager.RyuApp):
+class U1071673(app_manager.RyuApp):
     OFP_VERSIONS = [ofproto_v1_3.OFP_VERSION]
 
     def __init__(self, *args, **kwargs):
         '''
-        Init method that calls the super init method of Monitor.
+        Init method that calls the super init method of U1071673.
         :param args: Init arguments
         :param kwargs: Init KW arguments
         '''
-        super(Monitor, self).__init__(*args, **kwargs)
+        super(U1071673, self).__init__(*args, **kwargs)
         self.ip_to_port = {}
         self.client_to_server = {}
         self.mac_port_from_ip = {}
